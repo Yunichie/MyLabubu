@@ -103,31 +103,12 @@ func (s *store) createSumberDaya(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "body tidak valid")
 		return
 	}
-	if in.Nama == nil || in.Jenis == nil || in.Stok == nil {
-		writeError(w, http.StatusBadRequest, "nama, jenis, dan stok wajib diisi")
-		return
-	}
-	nama := strings.TrimSpace(*in.Nama)
-	if nama == "" {
-		writeError(w, http.StatusBadRequest, "Nama tidak boleh kosong")
-		return
-	}
-	if utf8.RuneCountInString(nama) > 50 {
-		writeError(w, http.StatusBadRequest, "Nama tidak boleh lebih dari 50 karakter")
-		return
-	}
-	jenis := strings.TrimSpace(*in.Jenis)
-	if jenis != "ruang" && jenis != "alat" {
-		writeError(w, http.StatusBadRequest, "Jenis hanya boleh alat atau ruang")
-		return
-	}
-	stok := *in.Stok
-	if stok < 1 {
-		writeError(w, http.StatusBadRequest, "Stok harus minimal 1")
+	sd, msg := validasiSumberDaya(in)
+	if msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 
-	sd := SumberDaya{Nama: nama, Jenis: jenis, Stok: stok}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -171,61 +152,16 @@ func (s *store) createPeminjaman(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "body tidak valid")
 		return
 	}
-	if in.SumberDayaID == nil || in.Peminjam == nil || in.Tanggal == nil ||
-		in.SlotMulai == nil || in.SlotSelesai == nil || in.Jumlah == nil {
-		writeError(w, http.StatusBadRequest, "semua field wajib diisi")
-		return
-	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	peminjam := strings.TrimSpace(*in.Peminjam)
-	if peminjam == "" {
-		writeError(w, http.StatusBadRequest, "Peminjam kosong")
+	p, stok, msg := s.validasiPeminjaman(in)
+	if msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	if utf8.RuneCountInString(peminjam) > 50 {
-		writeError(w, http.StatusBadRequest, "Peminjam maksimal 50 karakter")
-		return
-	}
-	tanggal := strings.TrimSpace(*in.Tanggal)
-	if !tanggalValid(tanggal) {
-		writeError(w, http.StatusBadRequest, "Tanggal tidak valid")
-		return
-	}
-	slot_mulai := *in.SlotMulai
-	slot_selesai := *in.SlotSelesai
-	if slot_mulai < 1 || slot_mulai > 8 || slot_selesai < 1 || slot_selesai > 8 || slot_mulai > slot_selesai {
-		writeError(w, http.StatusBadRequest, "Slot tidak valid")
-		return
-	}
-	jumlah := *in.Jumlah
-	if jumlah < 1 {
-		writeError(w, http.StatusBadRequest, "Jumlah tidak valid")
-		return
-	}
-
-	stok := -1
-	for _, sd := range s.sumberDaya {
-		if sd.ID == *in.SumberDayaID {
-			stok = sd.Stok
-			break
-		}
-	}
-	if stok == -1 {
-		writeError(w, http.StatusBadRequest, "sumber daya tidak ditemukan")
-		return
-	}
-	if jumlah > stok {
-		writeError(w, http.StatusBadRequest, "jumlah melebihi stok")
-		return
-	}
-
-	p := Peminjaman{
-		SumberDayaID: *in.SumberDayaID, Peminjam: peminjam, Tanggal: tanggal,
-		SlotMulai: slot_mulai, SlotSelesai: slot_selesai, Jumlah: jumlah, Status: "aktif",
-	}
+	p.Status = "aktif"
 	if s.adaBentrok(p, stok, 0) {
 		writeError(w, http.StatusConflict, "slot sudah penuh")
 		return
@@ -308,4 +244,77 @@ func (s *store) adaBentrok(p Peminjaman, stok int, abaikanID int) bool {
 		}
 	}
 	return false
+}
+
+func validasiSumberDaya(in sumberDayaInput) (SumberDaya, string) {
+	if in.Nama == nil || in.Jenis == nil || in.Stok == nil {
+		return SumberDaya{}, "nama, jenis, dan stok wajib diisi"
+	}
+	nama := strings.TrimSpace(*in.Nama)
+	if nama == "" {
+		return SumberDaya{}, "Nama tidak boleh kosong"
+	}
+	if utf8.RuneCountInString(nama) > 50 {
+		return SumberDaya{}, "Nama tidak boleh lebih dari 50 karakter"
+	}
+	jenis := strings.TrimSpace(*in.Jenis)
+	if jenis != "ruang" && jenis != "alat" {
+		return SumberDaya{}, "Jenis hanya boleh alat atau ruang"
+	}
+	if *in.Stok < 1 {
+		return SumberDaya{}, "Stok harus minimal 1"
+	}
+	return SumberDaya{Nama: nama, Jenis: jenis, Stok: *in.Stok}, ""
+}
+
+func validasiPeminjamSlot(peminjam, tanggal *string, mulai, selesai *int) (Peminjaman, string) {
+	p := Peminjaman{
+		Peminjam:    strings.TrimSpace(*peminjam),
+		Tanggal:     strings.TrimSpace(*tanggal),
+		SlotMulai:   *mulai,
+		SlotSelesai: *selesai,
+	}
+	if p.Peminjam == "" {
+		return p, "Peminjam kosong"
+	}
+	if utf8.RuneCountInString(p.Peminjam) > 50 {
+		return p, "Peminjam maksimal 50 karakter"
+	}
+	if !tanggalValid(p.Tanggal) {
+		return p, "Tanggal tidak valid"
+	}
+	if p.SlotMulai < 1 || p.SlotMulai > 8 || p.SlotSelesai < 1 || p.SlotSelesai > 8 || p.SlotMulai > p.SlotSelesai {
+		return p, "Slot tidak valid"
+	}
+	return p, ""
+}
+
+func (s *store) stokSumberDaya(id int) int {
+	for _, sd := range s.sumberDaya {
+		if sd.ID == id {
+			return sd.Stok
+		}
+	}
+	return -1
+}
+
+func (s *store) validasiPeminjaman(in peminjamanInput) (Peminjaman, int, string) {
+	if in.SumberDayaID == nil || in.Peminjam == nil || in.Tanggal == nil ||
+		in.SlotMulai == nil || in.SlotSelesai == nil || in.Jumlah == nil {
+		return Peminjaman{}, 0, "semua field wajib diisi"
+	}
+	p, msg := validasiPeminjamSlot(in.Peminjam, in.Tanggal, in.SlotMulai, in.SlotSelesai)
+	if msg != "" {
+		return p, 0, msg
+	}
+	stok := s.stokSumberDaya(*in.SumberDayaID)
+	if stok == -1 {
+		return p, 0, "sumber daya tidak ditemukan"
+	}
+	if *in.Jumlah < 1 || *in.Jumlah > stok {
+		return p, 0, "jumlah harus antara 1 dan stok"
+	}
+	p.SumberDayaID = *in.SumberDayaID
+	p.Jumlah = *in.Jumlah
+	return p, stok, ""
 }
